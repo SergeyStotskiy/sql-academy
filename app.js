@@ -106,6 +106,285 @@ function renderError(err) {
   return `<p class="error">Ошибка: ${escapeHtml(err.message || String(err))}</p>`;
 }
 
+// ---------- Live query preview ----------
+//
+// Показывает в реальном времени, что происходит с ИСХОДНОЙ таблицей, пока
+// пользователь печатает: какие строки проходят WHERE и какие столбцы попадают
+// в результат. Работает только для одно-табличных SELECT (для JOIN/CTE честно
+// сообщает, что разбор недоступен — подсветить "ту самую" таблицу там нельзя).
+//
+// Важно: живой предпросмотр НИКОГДА не выполняет ничего, кроме SELECT/WITH —
+// иначе набранное в песочнице DROP TABLE выполнилось бы прямо во время набора.
+
+const LIVE_ROW_CAP = 80;
+
+// Ключевые слова, при которых построчная подсветка одной таблицы теряет смысл.
+const MULTI_SOURCE_RE = /\b(JOIN|UNION|EXCEPT|INTERSECT)\b/i;
+const CLAUSE_STOP_WORDS = new Set(['WHERE', 'GROUP', 'ORDER', 'LIMIT', 'HAVING', 'WINDOW', 'OFFSET']);
+
+function stripSqlComments(sql) {
+  return sql.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ');
+}
+
+// Разбирает SQL на слова, находящиеся на верхнем уровне вложенности скобок,
+// пропуская строковые литералы. Благодаря этому FROM внутри подзапроса
+// (он всегда в скобках) не путается с основным FROM запроса.
+function scanTopLevelWords(sql) {
+  const words = [];
+  let depth = 0;
+  let i = 0;
+  while (i < sql.length) {
+    const ch = sql[i];
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      i++;
+      while (i < sql.length) {
+        if (sql[i] === quote) {
+          if (sql[i + 1] === quote) {
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (ch === ')') {
+      depth--;
+      i++;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      let j = i;
+      while (j < sql.length && /\w/.test(sql[j])) j++;
+      if (depth === 0) words.push({ word: sql.slice(i, j).toUpperCase(), start: i, end: j });
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  return words;
+}
+
+function isReadOnlyQuery(sql) {
+  const first = stripSqlComments(sql).trim().split(/\s+/)[0] || '';
+  const kw = first.toUpperCase();
+  return kw === 'SELECT' || kw === 'WITH';
+}
+
+function tableColumnNames(table) {
+  const info = db.exec(`PRAGMA table_info(${table});`);
+  if (!info.length) return null;
+  return info[0].values.map((row) => row[1]);
+}
+
+function mentionsColumn(text, column) {
+  return new RegExp(`\\b${column}\\b`, 'i').test(text);
+}
+
+// Разбивает список на элементы по запятым верхнего уровня (запятые внутри
+// вызовов функций — SUM(a, b) — не считаются разделителями).
+function splitTopLevelCommas(text) {
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '(') depth++;
+    if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts;
+}
+
+// true только для настоящей "звёздочки всех столбцов" (`*` или `t.*`),
+// но не для COUNT(*) и не для умножения вида quantity * unit_price.
+function selectsAllColumns(selectList) {
+  return splitTopLevelCommas(selectList).some((item) => /^\s*(?:\w+\s*\.\s*)?\*\s*$/.test(item));
+}
+
+// Возвращает либо { ok: true, ...данные для подсветки }, либо { ok: false, reason }.
+function analyzeQuery(sql) {
+  const clean = stripSqlComments(sql).trim().replace(/;+\s*$/, '');
+  if (!clean) return { ok: false, reason: 'empty' };
+  if (!isReadOnlyQuery(clean)) return { ok: false, reason: 'not-select' };
+  if (MULTI_SOURCE_RE.test(clean)) return { ok: false, reason: 'multi-source' };
+
+  const words = scanTopLevelWords(clean);
+  if (!words.length || words[0].word !== 'SELECT') return { ok: false, reason: 'multi-source' };
+
+  const fromWord = words.find((w) => w.word === 'FROM');
+  if (!fromWord) return { ok: false, reason: 'no-from' };
+
+  // Имя таблицы и необязательный алиас сразу после FROM.
+  const tail = clean.slice(fromWord.end);
+  const m = tail.match(/^\s+([A-Za-z_]\w*)(\s+(?:AS\s+)?([A-Za-z_]\w*))?/i);
+  if (!m) return { ok: false, reason: 'multi-source' };
+  const table = m[1];
+  let alias = m[3] || null;
+  if (alias && CLAUSE_STOP_WORDS.has(alias.toUpperCase())) alias = null;
+
+  // FROM a, b — старый стиль соединения, подсветка одной таблицы соврала бы.
+  const afterSource = tail.slice(m[0].length).trimStart();
+  if (afterSource.startsWith(',')) return { ok: false, reason: 'multi-source' };
+
+  let columns;
+  try {
+    columns = tableColumnNames(table);
+  } catch {
+    return { ok: false, reason: 'unknown-table' };
+  }
+  if (!columns) return { ok: false, reason: 'unknown-table' };
+
+  const selectList = clean.slice(words[0].end, fromWord.start);
+  const hasStar = selectsAllColumns(selectList);
+
+  const whereWord = words.find((w) => w.word === 'WHERE');
+  const groupWord = words.find((w) => w.word === 'GROUP');
+  let whereClause = null;
+  if (whereWord) {
+    const stop = words.find((w) => w.start > whereWord.start && CLAUSE_STOP_WORDS.has(w.word));
+    whereClause = clean.slice(whereWord.end, stop ? stop.start : undefined).trim();
+  }
+
+  // Хвост запроса (ORDER BY / LIMIT) применяем только если нет GROUP BY:
+  // при группировке они действуют на группы, а не на исходные строки.
+  const ref = alias || table;
+  const source = `${table}${alias ? ' ' + alias : ''}`;
+  const orderWord = words.find((w) => w.word === 'ORDER' || w.word === 'LIMIT');
+  const tailClause = !groupWord && orderWord ? clean.slice(orderWord.start) : '';
+  const wherePart = whereClause ? ` WHERE ${whereClause}` : '';
+
+  let matched = null;
+  const attempts = [
+    `SELECT ${ref}.rowid FROM ${source}${wherePart} ${tailClause}`,
+    `SELECT ${ref}.rowid FROM ${source}${wherePart}`,
+  ];
+  for (const attempt of attempts) {
+    try {
+      const res = db.exec(attempt);
+      matched = new Set(res.length ? res[0].values.map((r) => r[0]) : []);
+      break;
+    } catch {
+      /* пробуем следующий, более простой вариант */
+    }
+  }
+  if (!matched) return { ok: false, reason: 'invalid' };
+
+  const selectedColumns = new Set(
+    columns.filter((c) => hasStar || mentionsColumn(selectList, c))
+  );
+  const filterColumns = new Set(
+    whereClause ? columns.filter((c) => mentionsColumn(whereClause, c)) : []
+  );
+
+  const all = db.exec(`SELECT ${ref}.rowid AS __rid, ${ref}.* FROM ${source} LIMIT ${LIVE_ROW_CAP};`);
+  const rows = all.length ? all[0].values : [];
+
+  return {
+    ok: true,
+    table,
+    columns,
+    rows,
+    matched,
+    selectedColumns,
+    filterColumns,
+    hasWhere: !!whereClause,
+    grouped: !!groupWord,
+  };
+}
+
+const LIVE_REASON_TEXT = {
+  empty: 'Начните печатать запрос — здесь будет видно, какие строки и столбцы он выбирает.',
+  'not-select': 'Живой предпросмотр работает только для SELECT (чтобы ничего не изменить в базе случайно).',
+  'multi-source': 'В запросе несколько источников (JOIN, CTE, UNION) — подсветить одну исходную таблицу нельзя. Результат можно посмотреть кнопкой ниже.',
+  'no-from': 'В запросе нет FROM — подсвечивать нечего.',
+  'unknown-table': 'Такой таблицы нет в базе. Список таблиц — в панели «Схема БД» справа.',
+  invalid: 'Запрос пока не выполняется (возможно, он ещё не дописан).',
+};
+
+function renderLivePreview(sql, container) {
+  const analysis = analyzeQuery(sql);
+
+  if (!analysis.ok) {
+    container.innerHTML = `<p class="live-hint">${escapeHtml(
+      LIVE_REASON_TEXT[analysis.reason] || LIVE_REASON_TEXT.invalid
+    )}</p>`;
+    return;
+  }
+
+  const { table, columns, rows, matched, selectedColumns, filterColumns, hasWhere, grouped } = analysis;
+
+  const head = columns
+    .map((c) => {
+      const cls = selectedColumns.has(c) ? ' class="col-sel"' : '';
+      const badge = filterColumns.has(c) ? ' <span class="col-badge" title="участвует в WHERE">фильтр</span>' : '';
+      return `<th${cls}>${escapeHtml(c)}${badge}</th>`;
+    })
+    .join('');
+
+  const body = rows
+    .map((row) => {
+      const rid = row[0];
+      const isMatch = matched.has(rid);
+      const cells = columns
+        .map((c, idx) => {
+          const v = row[idx + 1];
+          const classes = [];
+          if (selectedColumns.has(c)) classes.push('col-sel');
+          if (v === null) classes.push('null');
+          const attr = classes.length ? ` class="${classes.join(' ')}"` : '';
+          return `<td${attr}>${v === null ? 'NULL' : escapeHtml(v)}</td>`;
+        })
+        .join('');
+      return `<tr class="${isMatch ? 'row-match' : 'row-dim'}">${cells}</tr>`;
+    })
+    .join('');
+
+  const matchedShown = rows.filter((r) => matched.has(r[0])).length;
+  const summary = hasWhere
+    ? `Подходит строк: <strong>${matchedShown}</strong> из ${rows.length}`
+    : `Условия WHERE нет — берутся все ${rows.length} строк`;
+  const groupNote = grouped
+    ? ' <span class="muted">(есть GROUP BY — подсвечены строки, которые попадут в группировку)</span>'
+    : '';
+
+  container.innerHTML = `
+    <p class="live-summary">Таблица <code>${escapeHtml(table)}</code> · ${summary}${groupNote}</p>
+    <div class="live-legend">
+      <span><span class="swatch swatch-row"></span> строка проходит фильтр</span>
+      <span><span class="swatch swatch-col"></span> столбец попадает в результат</span>
+      <span><span class="swatch swatch-dim"></span> строка отброшена</span>
+    </div>
+    <div class="table-wrap"><table class="live-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>
+  `;
+}
+
+// Привязывает живой предпросмотр к textarea (с задержкой, чтобы не пересчитывать
+// на каждое нажатие клавиши).
+function attachLivePreview(textarea, container) {
+  let timer = null;
+  const update = () => renderLivePreview(textarea.value, container);
+  textarea.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(update, 250);
+  });
+  update();
+}
+
 // ---------- Schema reference panel ----------
 
 function renderSchemaReference() {
@@ -191,6 +470,7 @@ function renderLesson(lesson) {
         <p class="muted">${escapeHtml(lesson.example.note)}</p>
         <button class="btn run-example">Выполнить пример</button>
         <div class="result example-result"></div>
+        <div class="live-body example-live"></div>
       </section>
 
       <section class="exercises">
@@ -202,6 +482,7 @@ function renderLesson(lesson) {
 
   main.querySelector('.run-example').addEventListener('click', () => {
     runAndShow(lesson.example.query, main.querySelector('.example-result'));
+    renderLivePreview(lesson.example.query, main.querySelector('.example-live'));
   });
 
   const list = main.querySelector('.exercise-list');
@@ -222,6 +503,10 @@ function renderExercise(lesson, ex, idx, container) {
       <button class="btn check-btn">Проверить</button>
       <details class="solution"><summary>Показать решение</summary><pre class="sql-code"></pre></details>
     </div>
+    <section class="live-preview">
+      <h5>Что выбирается прямо сейчас</h5>
+      <div class="live-body"></div>
+    </section>
     <div class="result exercise-result"></div>
     <div class="check-feedback"></div>
   `;
@@ -230,6 +515,7 @@ function renderExercise(lesson, ex, idx, container) {
   const resultEl = wrap.querySelector('.exercise-result');
   const feedbackEl = wrap.querySelector('.check-feedback');
   wrap.querySelector('.solution pre').textContent = ex.solutionQuery;
+  attachLivePreview(textarea, wrap.querySelector('.live-body'));
 
   wrap.querySelector('.run-btn').addEventListener('click', () => {
     feedbackEl.innerHTML = '';
@@ -271,6 +557,10 @@ function renderSandbox() {
       <div class="exercise-actions">
         <button class="btn run-btn">Выполнить</button>
       </div>
+      <section class="live-preview">
+        <h3>Что выбирается прямо сейчас</h3>
+        <div class="live-body"></div>
+      </section>
       <div class="result sandbox-result"></div>
     </article>
   `;
@@ -279,6 +569,7 @@ function renderSandbox() {
   main.querySelector('.run-btn').addEventListener('click', () => {
     runAndShow(textarea.value, resultEl);
   });
+  attachLivePreview(textarea, main.querySelector('.live-body'));
 }
 
 function renderDataBrowser() {

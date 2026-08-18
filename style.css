@@ -9,6 +9,10 @@
   --fail: #dc2626;
   --code-bg: #f4f4f5;
   --sidebar-bg: #fafafa;
+  --match-bg: #dcfce7;
+  --match-sel-bg: #bbf7d0;
+  --sel-bg: #dbeafe;
+  --sel-head-bg: #bfdbfe;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -22,6 +26,10 @@
     --fail: #f87171;
     --code-bg: #1f2127;
     --sidebar-bg: #1b1d22;
+    --match-bg: #14351f;
+    --match-sel-bg: #1c5233;
+    --sel-bg: #1b2f4d;
+    --sel-head-bg: #234069;
   }
 }
 
@@ -154,6 +162,61 @@ body {
 .feedback.fail { color: var(--fail); }
 .error { color: var(--fail); font-size: 0.85rem; }
 .muted { color: var(--muted); font-size: 0.85rem; }
+
+/* ---- Живой предпросмотр: подсветка строк/столбцов исходной таблицы ---- */
+
+.live-preview {
+  margin: 0.75rem 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+.live-preview h3, .live-preview h5 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+.live-hint { margin: 0; color: var(--muted); font-size: 0.85rem; }
+.live-summary { margin: 0 0 0.5rem; font-size: 0.88rem; }
+.live-summary code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+
+.live-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.live-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+.swatch {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  display: inline-block;
+}
+.swatch-row { background: var(--match-bg); }
+.swatch-col { background: var(--sel-bg); }
+.swatch-dim { background: var(--code-bg); opacity: 0.4; }
+
+.live-table tr.row-match td { background: var(--match-bg); }
+.live-table tr.row-dim { opacity: 0.4; }
+.live-table th.col-sel { background: var(--sel-head-bg); }
+.live-table td.col-sel { background: var(--sel-bg); }
+.live-table tr.row-match td.col-sel { background: var(--match-sel-bg); }
+
+.col-badge {
+  font-size: 0.65rem;
+  font-weight: 400;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 0.2em;
+  margin-left: 0.25em;
+  white-space: nowrap;
+}
 
 .table-wrap { overflow-x: auto; max-width: 100%; }
 table { border-collapse: collapse; font-size: 0.85rem; margin-top: 0.5rem; }

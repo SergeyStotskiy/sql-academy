@@ -51,14 +51,34 @@ column), add the row to `schema.sql` rather than special-casing the query — se
 25 ("Yoga Block"), which exists solely so the "products never purchased" exercise in module 7 has
 a non-empty answer.
 
-**`app.js`** does three things: boots sql.js from a CDN (`SQLJS_CDN` constant) and loads
-`schema.sql` into an in-memory DB; renders lessons/exercises/sandbox from `LESSONS`; and grades
-exercises via `compareResults()`. Grading compares only row *values*, not column names/aliases —
+**`app.js`** does four things: boots sql.js from a CDN (`SQLJS_CDN` constant) and loads
+`schema.sql` into an in-memory DB; renders lessons/exercises/sandbox/data-browser from `LESSONS`;
+drives the live query preview (below); and grades exercises via `compareResults()`. Grading
+compares only row *values*, not column names/aliases —
 a learner's query with different column aliases than `solutionQuery` still passes as long as the
 values line up positionally. By default row order doesn't matter (rows are sorted before
 comparing); set `orderMatters: true` on an exercise (used in the ORDER BY/LIMIT module) to require
 an exact positional match instead. Progress (which exercises have passed) is tracked per
 `lessonId`/`exerciseId` in `localStorage`.
+
+**Live query preview** (`analyzeQuery()` + `renderLivePreview()` in `app.js`) is the one piece with
+real complexity. As the learner types, it shows the *source* table with rows that pass `WHERE`
+highlighted and result columns tinted. Since it must map a result back onto one source table, it
+does a deliberately shallow parse: `scanTopLevelWords()` walks the SQL tracking paren depth and
+string literals, so only depth-0 keywords count — which is what lets a scalar subquery
+(`WHERE price > (SELECT AVG(price) FROM products)`) still resolve its outer `FROM` correctly.
+Matched rows are found by *rebuilding* a `SELECT <ref>.rowid FROM <table> WHERE ...` query rather
+than by interpreting the condition in JS, so SQLite remains the only thing evaluating SQL
+semantics. Two invariants to preserve when touching this code:
+
+- It only ever executes `SELECT`/`WITH` (`isReadOnlyQuery()`). The preview runs on every keystroke,
+  so without that guard a half-typed `DROP TABLE customers` in the sandbox would execute for real.
+- Anything it cannot honestly map to a single source table (`JOIN`, `UNION`, CTEs, comma joins)
+  must bail out with a `reason` from `LIVE_REASON_TEXT`, not guess. Highlighting the wrong table is
+  worse than showing nothing.
+
+`ORDER BY`/`LIMIT` are folded into the rowid query (so highlighting matches a top-N result exactly)
+but skipped when `GROUP BY` is present, where they apply to groups rather than source rows.
 
 **`test/validate.js`** is not a unit test suite in the usual sense — there are no hardcoded
 expected values to assert against (see above). It re-executes every `example.query` and
