@@ -72,6 +72,13 @@ function runSql(sql) {
   return results[results.length - 1];
 }
 
+// Оборачивает имя таблицы/столбца в двойные кавычки для подстановки в SQL.
+// Без этого таблица, созданная учеником и названная ключевым словом (`order`)
+// или с пробелом, ломает все служебные запросы — вплоть до пустой модалки «Посмотреть БД».
+function quoteIdent(name) {
+  return `"${String(name).replace(/"/g, '""')}"`;
+}
+
 function execIn(database, sql) {
   const res = database.exec(sql);
   return res.length ? res[res.length - 1] : { columns: [], values: [] };
@@ -131,21 +138,47 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function renderResultTable(result) {
+// Столбец считается числовым, если все его непустые значения — числа.
+// Числовые столбцы выключаются вправо: так разряды выстраиваются друг под другом
+// и колонку цен видно с одного взгляда.
+function numericColumns(result) {
+  return result.columns.map((_, idx) => {
+    let sawValue = false;
+    for (const row of result.values) {
+      const v = row[idx];
+      if (v === null || v === undefined) continue;
+      if (typeof v !== 'number') return false;
+      sawValue = true;
+    }
+    return sawValue;
+  });
+}
+
+function renderCell(value, isNum) {
+  if (value === null || value === undefined) return '<td class="null"><span>NULL</span></td>';
+  return `<td${isNum ? ' class="num"' : ''}>${escapeHtml(value)}</td>`;
+}
+
+// headCells — готовая разметка <th> (нужна карточкам данных, где в шапку
+// добавляются тип столбца и маркеры ключей). Без неё берутся простые имена.
+function renderResultTable(result, opts = {}) {
   if (result.columns.length === 0) {
     return '<p class="muted">Запрос выполнен, но не вернул строк.</p>';
   }
-  const head = result.columns.map((c) => `<th>${escapeHtml(c)}</th>`).join('');
+  const nums = numericColumns(result);
+  const head = opts.headCells || result.columns.map((c) => `<th>${escapeHtml(c)}</th>`).join('');
   const rows = result.values
-    .map((row) => {
-      const cells = row
-        .map((v) => (v === null ? '<td class="null">NULL</td>' : `<td>${escapeHtml(v)}</td>`))
-        .join('');
-      return `<tr>${cells}</tr>`;
-    })
+    .map((row) => `<tr>${row.map((v, i) => renderCell(v, nums[i])).join('')}</tr>`)
     .join('');
+
+  const tableClass = ['data-table', opts.stickyFirstColumn ? 'sticky-first' : '']
+    .filter(Boolean)
+    .join(' ');
+  const table = `<table class="${tableClass}"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+
+  if (opts.bare) return table;
   const rowCount = `<p class="muted">${result.values.length} строк(и)</p>`;
-  return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>${rowCount}`;
+  return `<div class="table-wrap">${table}</div>${rowCount}`;
 }
 
 function renderError(err) {
@@ -226,7 +259,7 @@ function isReadOnlyQuery(sql) {
 }
 
 function tableColumnNames(table) {
-  const info = db.exec(`PRAGMA table_info(${table});`);
+  const info = db.exec(`PRAGMA table_info(${quoteIdent(table)});`);
   if (!info.length) return null;
   return info[0].values.map((row) => row[1]);
 }
@@ -276,11 +309,13 @@ function analyzeQuery(sql) {
   if (!fromWord) return { ok: false, reason: 'no-from' };
 
   // Имя таблицы и необязательный алиас сразу после FROM.
+  // Имя может быть в двойных кавычках — так пишут, когда оно совпадает с ключевым
+  // словом (`"order"`) или содержит пробел.
   const tail = clean.slice(fromWord.end);
-  const m = tail.match(/^\s+([A-Za-z_]\w*)(\s+(?:AS\s+)?([A-Za-z_]\w*))?/i);
+  const m = tail.match(/^\s+(?:"((?:[^"]|"")+)"|([A-Za-z_]\w*))(\s+(?:AS\s+)?([A-Za-z_]\w*))?/i);
   if (!m) return { ok: false, reason: 'multi-source' };
-  const table = m[1];
-  let alias = m[3] || null;
+  const table = m[1] !== undefined ? m[1].replace(/""/g, '"') : m[2];
+  let alias = m[4] || null;
   if (alias && CLAUSE_STOP_WORDS.has(alias.toUpperCase())) alias = null;
 
   // FROM a, b — старый стиль соединения, подсветка одной таблицы соврала бы.
@@ -308,8 +343,9 @@ function analyzeQuery(sql) {
 
   // Хвост запроса (ORDER BY / LIMIT) применяем только если нет GROUP BY:
   // при группировке они действуют на группы, а не на исходные строки.
-  const ref = alias || table;
-  const source = `${table}${alias ? ' ' + alias : ''}`;
+  const quotedTable = quoteIdent(table);
+  const ref = alias || quotedTable;
+  const source = `${quotedTable}${alias ? ' ' + alias : ''}`;
   const orderWord = words.find((w) => w.word === 'ORDER' || w.word === 'LIMIT');
   const tailClause = !groupWord && orderWord ? clean.slice(orderWord.start) : '';
   const wherePart = whereClause ? ` WHERE ${whereClause}` : '';
@@ -442,8 +478,8 @@ function collectSchema() {
   ).values.map((r) => r[0]);
 
   return tableNames.map((name) => {
-    const info = execIn(db, `PRAGMA table_info(${name});`);
-    const fkInfo = execIn(db, `PRAGMA foreign_key_list(${name});`);
+    const info = execIn(db, `PRAGMA table_info(${quoteIdent(name)});`);
+    const fkInfo = execIn(db, `PRAGMA foreign_key_list(${quoteIdent(name)});`);
 
     // PRAGMA foreign_key_list: [id, seq, table, from, to, on_update, on_delete, match]
     const fks = fkInfo.values.map((row) => ({
@@ -616,32 +652,96 @@ function buildErDiagram(schema) {
   `;
 }
 
-function buildAllTablesHtml() {
-  const schema = collectSchema();
-  return schema
-    .map((t) => {
-      const result = runSql(`SELECT * FROM ${t.name} LIMIT 500;`);
-      return `<section class="data-table-block"><h4>${escapeHtml(t.name)}</h4>${renderResultTable(
-        result
-      )}</section>`;
+// Карточка одной таблицы: плотная шапка с именем и счётчиками, а внутри —
+// прокручиваемое тело с залипающим заголовком столбцов. Одинаковая высота карточек
+// нужна, чтобы сетка не «рвалась» при разном количестве строк в таблицах.
+function buildTableCard(table) {
+  const result = runSql(`SELECT * FROM ${quoteIdent(table.name)} LIMIT 500;`);
+
+  const headCells = table.columns
+    .map((c) => {
+      const marks = [];
+      if (c.pk) marks.push('<span class="th-key" title="первичный ключ">🔑</span>');
+      if (c.fk)
+        marks.push(
+          `<span class="th-fk" title="ссылается на ${escapeHtml(c.fk.table)}.${escapeHtml(
+            c.fk.to
+          )}">→ ${escapeHtml(c.fk.table)}</span>`
+        );
+      return `<th>
+        <span class="th-name">${escapeHtml(c.name)} ${marks.join(' ')}</span>
+        <span class="th-type">${escapeHtml(c.type)}</span>
+      </th>`;
     })
     .join('');
+
+  const body =
+    result.columns.length === 0
+      ? '<p class="muted table-empty">Таблица пуста.</p>'
+      : renderResultTable(result, { headCells, bare: true, stickyFirstColumn: true });
+
+  return `
+    <section class="table-card" id="table-${escapeHtml(table.name)}">
+      <header class="table-card-head">
+        <h4>${escapeHtml(table.name)}</h4>
+        <span class="table-badges">
+          <span class="badge">${result.values.length} строк</span>
+          <span class="badge">${table.columns.length} столб.</span>
+        </span>
+      </header>
+      <div class="table-card-body">${body}</div>
+    </section>
+  `;
+}
+
+// Чипсы для быстрого перехода к нужной таблице — с восемью таблицами скроллить вслепую неудобно.
+function buildTableNav(schema) {
+  const chips = schema
+    .map((t) => {
+      const cnt = runSql(`SELECT COUNT(*) FROM ${quoteIdent(t.name)};`).values[0][0];
+      return `<button class="chip" data-table="${escapeHtml(t.name)}">${escapeHtml(
+        t.name
+      )} <span class="chip-count">${cnt}</span></button>`;
+    })
+    .join('');
+  return `<div class="table-nav">${chips}</div>`;
+}
+
+function buildAllTablesHtml(schema) {
+  return `<div class="data-grid">${schema.map(buildTableCard).join('')}</div>`;
+}
+
+// Клик по чипсу подсвечивает и прокручивает к карточке таблицы.
+function wireTableNav(root) {
+  root.querySelectorAll('.chip[data-table]').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const card = root.querySelector(`#table-${CSS.escape(chip.dataset.table)}`);
+      if (!card) return;
+      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      card.classList.add('table-card-flash');
+      setTimeout(() => card.classList.remove('table-card-flash'), 1200);
+    });
+  });
 }
 
 // ---------- "Посмотреть БД" modal ----------
 
 function openDbModal() {
   const overlay = document.getElementById('db-modal');
-  overlay.querySelector('.db-modal-body').innerHTML = `
+  const schema = collectSchema();
+  const body = overlay.querySelector('.db-modal-body');
+  body.innerHTML = `
     <section>
       <h3>Связи между таблицами</h3>
-      ${buildErDiagram(collectSchema())}
+      ${buildErDiagram(schema)}
     </section>
     <section>
       <h3>Данные</h3>
-      <div class="data-grid">${buildAllTablesHtml()}</div>
+      ${buildTableNav(schema)}
+      ${buildAllTablesHtml(schema)}
     </section>
   `;
+  wireTableNav(body);
   overlay.classList.remove('hidden');
   document.body.classList.add('modal-open');
 }
@@ -1104,6 +1204,7 @@ function renderTask(task, idx, container) {
 
 function renderDataBrowser() {
   const main = document.getElementById('main-content');
+  const schema = collectSchema();
   main.innerHTML = `
     <article class="lesson">
       <h2>📋 Схема и данные</h2>
@@ -1111,14 +1212,16 @@ function renderDataBrowser() {
       кнопкой «Посмотреть БД» вверху.</p>
       <section>
         <h3>Связи между таблицами</h3>
-        ${buildErDiagram(collectSchema())}
+        ${buildErDiagram(schema)}
       </section>
       <section>
         <h3>Данные</h3>
-        <div class="data-grid">${buildAllTablesHtml()}</div>
+        ${buildTableNav(schema)}
+        ${buildAllTablesHtml(schema)}
       </section>
     </article>
   `;
+  wireTableNav(main);
 }
 
 // ---------- Boot ----------

@@ -123,6 +123,17 @@ semantics. Two invariants to preserve when touching this code:
 `ORDER BY`/`LIMIT` are folded into the rowid query (so highlighting matches a top-N result exactly)
 but skipped when `GROUP BY` is present, where they apply to groups rather than source rows.
 
+**Table rendering** is centralised in `renderResultTable(result, opts)`, which every surface shares —
+lesson exercises, sandbox, trainer, and the data cards — so changes there are global. It marks a
+column numeric only when every non-null value in it is a JS number (right-aligned, tabular figures),
+and takes `headCells` (pre-built `<th>` markup, used by the data cards to show column type plus 🔑/→
+key markers), `bare` (skip the wrapper and row counter) and `stickyFirstColumn`. `buildTableCard()`
+wraps one table in a fixed-height, independently scrolling card: the fixed height is what keeps the
+grid from going ragged when tables have wildly different row counts, and it is why the header row and
+first column are sticky — inside a short scroll box you otherwise lose both the column names and the
+row's `id`. Zebra/hover rules are deliberately scoped `table:not(.live-table)` so they cannot
+override the live preview's semantic row highlighting.
+
 **ER diagram** (`buildErDiagram()`): tables are laid out in columns by FK depth
 (`computeLevels()` — referenced tables sit left of the tables referencing them), so arrows read
 "from the referencing column to the referenced key". It is generated from live introspection, which
