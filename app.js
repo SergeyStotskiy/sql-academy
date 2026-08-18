@@ -142,6 +142,12 @@ function renderSidebar() {
     nav.appendChild(li);
   });
 
+  const dataLi = document.createElement('li');
+  dataLi.className = 'nav-item' + (state.currentLessonId === 'data' ? ' active' : '');
+  dataLi.innerHTML = '<span class="nav-title">📋 Данные таблиц</span>';
+  dataLi.addEventListener('click', () => selectLesson('data'));
+  nav.appendChild(dataLi);
+
   const sandboxLi = document.createElement('li');
   sandboxLi.className = 'nav-item' + (state.currentLessonId === 'sandbox' ? ' active' : '');
   sandboxLi.innerHTML = '<span class="nav-title">🧪 Песочница</span>';
@@ -154,6 +160,8 @@ function selectLesson(lessonId) {
   renderSidebar();
   if (lessonId === 'sandbox') {
     renderSandbox();
+  } else if (lessonId === 'data') {
+    renderDataBrowser();
   } else {
     renderLesson(LESSONS.find((l) => l.id === lessonId));
   }
@@ -270,6 +278,34 @@ function renderSandbox() {
   const resultEl = main.querySelector('.sandbox-result');
   main.querySelector('.run-btn').addEventListener('click', () => {
     runAndShow(textarea.value, resultEl);
+  });
+}
+
+function renderDataBrowser() {
+  const main = document.getElementById('main-content');
+  const tables = runSql(
+    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
+  ).values.map((r) => r[0]);
+
+  main.innerHTML = `
+    <article class="lesson">
+      <h2>📋 Данные таблиц</h2>
+      <p>Все таблицы учебной базы целиком, как они есть — полезно перед тем, как писать запрос:
+      посмотреть, какие значения реально встречаются в столбцах, прежде чем гадать.</p>
+      <div class="data-tables"></div>
+    </article>
+  `;
+
+  const container = main.querySelector('.data-tables');
+  tables.forEach((table) => {
+    const result = runSql(`SELECT * FROM ${table} LIMIT 500;`);
+    const block = document.createElement('section');
+    block.className = 'example-block';
+    block.innerHTML = `<h3>${escapeHtml(table)}</h3>`;
+    const resultDiv = document.createElement('div');
+    resultDiv.innerHTML = renderResultTable(result);
+    block.appendChild(resultDiv);
+    container.appendChild(block);
   });
 }
 
