@@ -1,9 +1,13 @@
-// Прогоняет каждый example.query и exercise.solutionQuery из lessons.js
-// против schema.sql на настоящей SQLite (sql.js в Node). Это не "юнит-тесты" в обычном
-// смысле — ожидаемые результаты упражнений вычисляются на лету в браузере (см. app.js),
-// а не хранятся здесь. Задача этого скрипта — ловить опечатки/поломки в самом учебном
-// контенте (несуществующий столбец, синтаксическая ошибка и т.п.) до того, как их
-// увидит ученик, плюс предупреждать, если решение неожиданно возвращает 0 строк.
+// Прогоняет каждый example.query и exercise.solutionQuery (плюс verifyQuery) из
+// lessons.js против schema.sql на настоящей SQLite (sql.js в Node). Это не
+// "юнит-тесты" в обычном смысле — ожидаемые результаты упражнений вычисляются на лету
+// в браузере (см. app.js), а не хранятся здесь. Задача этого скрипта — ловить
+// опечатки/поломки в самом учебном контенте (несуществующий столбец, синтаксическая
+// ошибка и т.п.) до того, как их увидит ученик.
+//
+// Каждый запрос выполняется в СВОЕЙ копии чистой базы: уроки модулей 4–6 меняют данные
+// и структуру (INSERT/UPDATE/DELETE/CREATE/DROP), поэтому общая база быстро разъехалась
+// бы и давала каскад ложных ошибок.
 
 const fs = require('fs');
 const path = require('path');
@@ -16,9 +20,13 @@ async function main() {
     locateFile: (file) => path.join(ROOT, 'node_modules', 'sql.js', 'dist', file),
   });
 
-  const db = new SQL.Database();
   const schemaSql = fs.readFileSync(path.join(ROOT, 'schema.sql'), 'utf8');
-  db.run(schemaSql);
+
+  // Снимок чистой базы, из которого делаются одноразовые копии.
+  const seed = new SQL.Database();
+  seed.run(schemaSql);
+  const pristine = seed.export();
+  seed.close();
 
   const LESSONS = require(path.join(ROOT, 'lessons.js'));
 
@@ -26,29 +34,62 @@ async function main() {
   let warnings = 0;
   let checked = 0;
 
-  function tryRun(label, sql) {
-    checked++;
+  // Выполняет набор запросов в свежей копии базы. Возвращает результат последнего.
+  function runIsolated(statements) {
+    const db = new SQL.Database(pristine);
     try {
-      const res = db.exec(sql);
-      const rowCount = res.length ? res[res.length - 1].values.length : 0;
-      if (rowCount === 0) {
-        warnings++;
-        console.warn(`  ⚠️  ${label}: выполнился, но вернул 0 строк`);
+      let last = null;
+      for (const sql of statements) {
+        const res = db.exec(sql);
+        last = res.length ? res[res.length - 1] : { columns: [], values: [] };
       }
+      return { ok: true, last };
     } catch (err) {
+      return { ok: false, error: err };
+    } finally {
+      db.close();
+    }
+  }
+
+  function check(label, statements, { expectRows = true } = {}) {
+    checked++;
+    const res = runIsolated(statements);
+    if (!res.ok) {
       failures++;
-      console.error(`  ❌ ${label}: ${err.message}`);
+      console.error(`  ❌ ${label}: ${res.error.message}`);
+      return;
+    }
+    if (expectRows && res.last.values.length === 0) {
+      warnings++;
+      console.warn(`  ⚠️  ${label}: выполнился, но вернул 0 строк`);
     }
   }
 
   for (const lesson of LESSONS) {
     console.log(`\n${lesson.title}`);
-    tryRun('example', lesson.example.query);
+
+    if (!lesson.exercises) {
+      failures++;
+      console.error('  ❌ у урока отсутствует поле exercises');
+      continue;
+    }
+
+    if (lesson.example) {
+      // У DDL/DML-примеров последний оператор может ничего не возвращать — это нормально.
+      check('example', [lesson.example.query], { expectRows: false });
+    }
+
     for (const ex of lesson.exercises) {
-      tryRun(`exercise ${ex.id}`, ex.solutionQuery);
-      if (ex.orderMatters === undefined) {
-        // orderMatters по умолчанию false — это ожидаемо для большинства уроков,
-        // явное предупреждение не нужно.
+      if (ex.mutating) {
+        if (!ex.verifyQuery) {
+          failures++;
+          console.error(`  ❌ exercise ${ex.id}: mutating без verifyQuery`);
+          continue;
+        }
+        // Эталон + проверочный запрос в одной изолированной базе, как это делает app.js.
+        check(`exercise ${ex.id}`, [ex.solutionQuery, ex.verifyQuery]);
+      } else {
+        check(`exercise ${ex.id}`, [ex.solutionQuery]);
       }
     }
   }

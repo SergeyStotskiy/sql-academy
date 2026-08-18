@@ -5,6 +5,11 @@ const SQLJS_CDN = 'https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/';
 const PROGRESS_KEY = 'sql-tutorial-progress-v1';
 
 let db = null;
+// Модуль sql.js и снимок чистой базы: нужны, чтобы (а) проверять упражнения,
+// меняющие данные (INSERT/UPDATE/DELETE/DDL), в отдельной одноразовой копии базы,
+// и (б) давать пользователю кнопку «сбросить базу» после своих экспериментов.
+let SQLModule = null;
+let pristineBytes = null;
 
 const state = {
   currentLessonId: null,
@@ -47,6 +52,29 @@ function runSql(sql) {
     return { columns: [], values: [] };
   }
   return results[results.length - 1];
+}
+
+function execIn(database, sql) {
+  const res = database.exec(sql);
+  return res.length ? res[res.length - 1] : { columns: [], values: [] };
+}
+
+// Выполняет fn на одноразовой копии ЧИСТОЙ базы. Основная база не затрагивается,
+// поэтому проверка упражнений не зависит от того, что пользователь наделал раньше.
+function withTempDb(fn) {
+  const tdb = new SQLModule.Database(pristineBytes);
+  try {
+    return fn(tdb);
+  } finally {
+    tdb.close();
+  }
+}
+
+function resetDatabase() {
+  if (db) db.close();
+  db = new SQLModule.Database(pristineBytes);
+  renderSchemaReference();
+  selectLesson(state.currentLessonId);
 }
 
 function normalizeValue(v) {
@@ -385,23 +413,241 @@ function attachLivePreview(textarea, container) {
   update();
 }
 
-// ---------- Schema reference panel ----------
+// ---------- Schema introspection ----------
 
-function renderSchemaReference() {
-  const tables = runSql(
-    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
+// Собирает структуру базы: таблицы, столбцы, первичные и внешние ключи.
+// Всё читается из самой базы (sqlite_master + PRAGMA), поэтому схема на экране
+// всегда соответствует реальности — в том числе таблицам, созданным учеником.
+function collectSchema() {
+  const tableNames = runSql(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
   ).values.map((r) => r[0]);
 
-  const blocks = tables.map((table) => {
-    const info = db.exec(`PRAGMA table_info(${table});`)[0];
-    const cols = info.values.map((row) => {
-      const [, name, type] = row;
-      return `<li><code>${escapeHtml(name)}</code> <span class="muted">${escapeHtml(type)}</span></li>`;
+  return tableNames.map((name) => {
+    const info = execIn(db, `PRAGMA table_info(${name});`);
+    const fkInfo = execIn(db, `PRAGMA foreign_key_list(${name});`);
+
+    // PRAGMA foreign_key_list: [id, seq, table, from, to, on_update, on_delete, match]
+    const fks = fkInfo.values.map((row) => ({
+      from: row[3],
+      table: row[2],
+      to: row[4] || 'id',
+    }));
+
+    const columns = info.values.map((row) => {
+      const [, colName, type, , , pk] = row;
+      const fk = fks.find((f) => f.from === colName) || null;
+      return { name: colName, type, pk: !!pk, fk };
     });
-    return `<div class="schema-table"><strong>${escapeHtml(table)}</strong><ul>${cols.join('')}</ul></div>`;
+
+    return { name, columns, fks };
+  });
+}
+
+function renderSchemaReference() {
+  const schema = collectSchema();
+  const blocks = schema.map((t) => {
+    const cols = t.columns.map((c) => {
+      const marks = [];
+      if (c.pk) marks.push('<span class="key-mark" title="первичный ключ">🔑</span>');
+      if (c.fk)
+        marks.push(
+          `<span class="fk-mark" title="ссылается на ${escapeHtml(c.fk.table)}.${escapeHtml(
+            c.fk.to
+          )}">→ ${escapeHtml(c.fk.table)}</span>`
+        );
+      return `<li><code>${escapeHtml(c.name)}</code> <span class="muted">${escapeHtml(
+        c.type
+      )}</span> ${marks.join(' ')}</li>`;
+    });
+    return `<div class="schema-table"><strong>${escapeHtml(t.name)}</strong><ul>${cols.join('')}</ul></div>`;
   });
 
   document.getElementById('schema-reference').innerHTML = blocks.join('');
+}
+
+// ---------- ER diagram ----------
+
+// Раскладывает таблицы по «уровням»: таблица без внешних ключей — уровень 0,
+// остальные правее тех, на кого ссылаются. Так стрелки всегда идут справа налево
+// и диаграмма читается как «от справочников к зависимым данным».
+function computeLevels(schema) {
+  const byName = new Map(schema.map((t) => [t.name, t]));
+  const levels = new Map();
+
+  const levelOf = (name, seen = new Set()) => {
+    if (levels.has(name)) return levels.get(name);
+    if (seen.has(name)) return 0; // защита от циклов в ссылках
+    seen.add(name);
+    const t = byName.get(name);
+    const parents = t ? t.fks.filter((f) => f.table !== name && byName.has(f.table)) : [];
+    const level = parents.length ? Math.max(...parents.map((f) => levelOf(f.table, seen) + 1)) : 0;
+    levels.set(name, level);
+    return level;
+  };
+
+  schema.forEach((t) => levelOf(t.name));
+  return levels;
+}
+
+function buildErDiagram(schema) {
+  if (!schema.length) return '<p class="muted">В базе нет таблиц.</p>';
+
+  const BOX_W = 210;
+  const HEAD_H = 30;
+  const ROW_H = 20;
+  const GAP_X = 130;
+  const GAP_Y = 34;
+  const PAD = 16;
+
+  const levels = computeLevels(schema);
+  const byLevel = new Map();
+  schema.forEach((t) => {
+    const l = levels.get(t.name) || 0;
+    if (!byLevel.has(l)) byLevel.set(l, []);
+    byLevel.get(l).push(t);
+  });
+
+  // Координаты каждой таблицы.
+  const layout = new Map();
+  [...byLevel.keys()]
+    .sort((a, b) => a - b)
+    .forEach((level) => {
+      let y = PAD;
+      byLevel.get(level).forEach((t) => {
+        const h = HEAD_H + t.columns.length * ROW_H;
+        layout.set(t.name, { x: PAD + level * (BOX_W + GAP_X), y, h });
+        y += h + GAP_Y;
+      });
+    });
+
+  const width =
+    PAD * 2 + (Math.max(...levels.values()) + 1) * BOX_W + Math.max(...levels.values()) * GAP_X;
+  const height =
+    PAD * 2 +
+    Math.max(
+      ...[...byLevel.values()].map((ts) =>
+        ts.reduce((sum, t) => sum + HEAD_H + t.columns.length * ROW_H + GAP_Y, 0)
+      )
+    );
+
+  const columnY = (table, colName) => {
+    const pos = layout.get(table.name);
+    const idx = table.columns.findIndex((c) => c.name === colName);
+    return pos.y + HEAD_H + (idx < 0 ? 0 : idx) * ROW_H + ROW_H / 2;
+  };
+
+  const byName = new Map(schema.map((t) => [t.name, t]));
+
+  // Связи рисуем кривыми Безье от столбца-ссылки к столбцу-цели.
+  const edges = [];
+  schema.forEach((t) => {
+    t.fks.forEach((fk) => {
+      const target = byName.get(fk.table);
+      if (!target) return;
+      const src = layout.get(t.name);
+      const tgt = layout.get(target.name);
+      const sy = columnY(t, fk.from);
+      const ty = columnY(target, fk.to);
+      // Если источник правее цели — выходим влево; иначе вправо.
+      const srcRight = src.x > tgt.x;
+      const sx = srcRight ? src.x : src.x + BOX_W;
+      const tx = srcRight ? tgt.x + BOX_W : tgt.x;
+      const bend = srcRight ? -60 : 60;
+      edges.push(
+        `<path class="er-edge" d="M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}" marker-end="url(#er-arrow)" />`
+      );
+    });
+  });
+
+  const boxes = schema.map((t) => {
+    const pos = layout.get(t.name);
+    const rows = t.columns.map((c, i) => {
+      const y = pos.y + HEAD_H + i * ROW_H;
+      const marks = `${c.pk ? '🔑 ' : ''}${c.fk ? '→ ' : ''}`;
+      return `
+        <text class="er-col${c.pk ? ' er-col-pk' : ''}${c.fk ? ' er-col-fk' : ''}" x="${pos.x + 10}" y="${y + 14}">${escapeHtml(
+        marks + c.name
+      )}</text>
+        <text class="er-type" x="${pos.x + BOX_W - 10}" y="${y + 14}" text-anchor="end">${escapeHtml(c.type)}</text>`;
+    });
+    return `
+      <g>
+        <rect class="er-box" x="${pos.x}" y="${pos.y}" width="${BOX_W}" height="${pos.h}" rx="8" />
+        <rect class="er-box-head" x="${pos.x}" y="${pos.y}" width="${BOX_W}" height="${HEAD_H}" rx="8" />
+        <text class="er-title" x="${pos.x + 10}" y="${pos.y + 20}">${escapeHtml(t.name)}</text>
+        ${rows.join('')}
+      </g>`;
+  });
+
+  return `
+    <div class="er-wrap">
+      <svg class="er-svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img"
+           aria-label="Диаграмма связей таблиц базы данных">
+        <defs>
+          <marker id="er-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="er-arrow-head" d="M 0 0 L 10 5 L 0 10 z" />
+          </marker>
+        </defs>
+        ${edges.join('')}
+        ${boxes.join('')}
+      </svg>
+    </div>
+    <p class="muted">🔑 — первичный ключ, → — внешний ключ (ссылка на другую таблицу).
+    Стрелка идёт от столбца-ссылки к столбцу, на который он ссылается.</p>
+  `;
+}
+
+function buildAllTablesHtml() {
+  const schema = collectSchema();
+  return schema
+    .map((t) => {
+      const result = runSql(`SELECT * FROM ${t.name} LIMIT 500;`);
+      return `<section class="data-table-block"><h4>${escapeHtml(t.name)}</h4>${renderResultTable(
+        result
+      )}</section>`;
+    })
+    .join('');
+}
+
+// ---------- "Посмотреть БД" modal ----------
+
+function openDbModal() {
+  const overlay = document.getElementById('db-modal');
+  overlay.querySelector('.db-modal-body').innerHTML = `
+    <section>
+      <h3>Связи между таблицами</h3>
+      ${buildErDiagram(collectSchema())}
+    </section>
+    <section>
+      <h3>Данные</h3>
+      <div class="data-grid">${buildAllTablesHtml()}</div>
+    </section>
+  `;
+  overlay.classList.remove('hidden');
+  document.body.classList.add('modal-open');
+}
+
+function closeDbModal() {
+  document.getElementById('db-modal').classList.add('hidden');
+  document.body.classList.remove('modal-open');
+}
+
+function initDbModal() {
+  const overlay = document.getElementById('db-modal');
+  document.getElementById('open-db-btn').addEventListener('click', openDbModal);
+  overlay.querySelector('.db-modal-close').addEventListener('click', closeDbModal);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeDbModal();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !overlay.classList.contains('hidden')) closeDbModal();
+  });
+
+  document.getElementById('reset-db-btn').addEventListener('click', () => {
+    resetDatabase();
+    if (!overlay.classList.contains('hidden')) openDbModal();
+  });
 }
 
 // ---------- Lesson rendering ----------
@@ -409,13 +655,26 @@ function renderSchemaReference() {
 function renderSidebar() {
   const nav = document.getElementById('lesson-nav');
   nav.innerHTML = '';
+  let currentModule = null;
   LESSONS.forEach((lesson) => {
+    // Заголовок модуля печатается один раз перед первым уроком этого модуля.
+    if (lesson.module && lesson.module !== currentModule) {
+      currentModule = lesson.module;
+      const head = document.createElement('li');
+      head.className = 'nav-module';
+      head.textContent = lesson.module;
+      nav.appendChild(head);
+    }
+
     const { done, total } = lessonProgress(lesson);
     const li = document.createElement('li');
     li.className = 'nav-item' + (lesson.id === state.currentLessonId ? ' active' : '');
+    // У справочных уроков упражнений нет — им не нужен ни счётчик, ни галочка «всё сделано».
+    const mark = total > 0 && done === total ? '✅ ' : '';
+    const counter = total > 0 ? `${done}/${total}` : '📖';
     li.innerHTML = `
-      <span class="nav-title">${done === total ? '✅ ' : ''}${escapeHtml(lesson.title)}</span>
-      <span class="nav-progress">${done}/${total}</span>
+      <span class="nav-title">${mark}${escapeHtml(lesson.title)}</span>
+      <span class="nav-progress">${counter}</span>
     `;
     li.addEventListener('click', () => selectLesson(lesson.id));
     nav.appendChild(li);
@@ -423,7 +682,7 @@ function renderSidebar() {
 
   const dataLi = document.createElement('li');
   dataLi.className = 'nav-item' + (state.currentLessonId === 'data' ? ' active' : '');
-  dataLi.innerHTML = '<span class="nav-title">📋 Данные таблиц</span>';
+  dataLi.innerHTML = '<span class="nav-title">📋 Схема и данные</span>';
   dataLi.addEventListener('click', () => selectLesson('data'));
   nav.appendChild(dataLi);
 
@@ -464,29 +723,58 @@ function renderLesson(lesson) {
       <h2>${escapeHtml(lesson.title)}</h2>
       <div class="lesson-intro">${lesson.intro}</div>
 
-      <section class="example-block">
+      ${lesson.note ? `<p class="lesson-note">${lesson.note}</p>` : ''}
+
+      ${
+        lesson.example
+          ? `<section class="example-block">
         <h3>Пример</h3>
         <pre class="sql-code">${escapeHtml(lesson.example.query)}</pre>
         <p class="muted">${escapeHtml(lesson.example.note)}</p>
         <button class="btn run-example">Выполнить пример</button>
         <div class="result example-result"></div>
         <div class="live-body example-live"></div>
-      </section>
+      </section>`
+          : ''
+      }
 
-      <section class="exercises">
+      ${
+        lesson.samples
+          ? `<section class="samples">
+        <h3>Как это выглядит в коде</h3>
+        ${lesson.samples
+          .map(
+            (s) => `<div class="sample">
+              <h4>${escapeHtml(s.title)}</h4>
+              <pre class="sql-code">${escapeHtml(s.code)}</pre>
+              ${s.note ? `<p class="muted">${escapeHtml(s.note)}</p>` : ''}
+            </div>`
+          )
+          .join('')}
+      </section>`
+          : ''
+      }
+
+      ${
+        lesson.exercises.length
+          ? `<section class="exercises">
         <h3>Упражнения</h3>
         <div class="exercise-list"></div>
-      </section>
+      </section>`
+          : ''
+      }
     </article>
   `;
 
-  main.querySelector('.run-example').addEventListener('click', () => {
-    runAndShow(lesson.example.query, main.querySelector('.example-result'));
-    renderLivePreview(lesson.example.query, main.querySelector('.example-live'));
-  });
+  if (lesson.example) {
+    main.querySelector('.run-example').addEventListener('click', () => {
+      runAndShow(lesson.example.query, main.querySelector('.example-result'));
+      renderLivePreview(lesson.example.query, main.querySelector('.example-live'));
+    });
+  }
 
   const list = main.querySelector('.exercise-list');
-  lesson.exercises.forEach((ex, idx) => renderExercise(lesson, ex, idx, list));
+  if (list) lesson.exercises.forEach((ex, idx) => renderExercise(lesson, ex, idx, list));
 }
 
 function renderExercise(lesson, ex, idx, container) {
@@ -524,15 +812,32 @@ function renderExercise(lesson, ex, idx, container) {
 
   wrap.querySelector('.check-btn').addEventListener('click', () => {
     let userResult;
+    let expectedResult;
     try {
-      userResult = runSql(textarea.value);
-      resultEl.innerHTML = renderResultTable(userResult);
+      if (ex.mutating) {
+        // Запрос меняет данные: выполняем его и эталон в отдельных копиях чистой базы,
+        // а сравниваем не вывод самого запроса (у INSERT его нет), а состояние
+        // таблиц после него — через verifyQuery.
+        userResult = withTempDb((tdb) => {
+          tdb.run(textarea.value);
+          return execIn(tdb, ex.verifyQuery);
+        });
+        expectedResult = withTempDb((tdb) => {
+          tdb.run(ex.solutionQuery);
+          return execIn(tdb, ex.verifyQuery);
+        });
+        resultEl.innerHTML =
+          '<p class="muted">Состояние таблицы после вашего запроса:</p>' + renderResultTable(userResult);
+      } else {
+        userResult = runSql(textarea.value);
+        expectedResult = withTempDb((tdb) => execIn(tdb, ex.solutionQuery));
+        resultEl.innerHTML = renderResultTable(userResult);
+      }
     } catch (err) {
       resultEl.innerHTML = renderError(err);
       feedbackEl.innerHTML = '<p class="feedback fail">❌ Запрос не выполнился.</p>';
       return;
     }
-    const expectedResult = runSql(ex.solutionQuery);
     const verdict = compareResults(userResult, expectedResult, !!ex.orderMatters);
     if (verdict.ok) {
       feedbackEl.innerHTML = '<p class="feedback ok">✅ Верно!</p>';
@@ -574,30 +879,21 @@ function renderSandbox() {
 
 function renderDataBrowser() {
   const main = document.getElementById('main-content');
-  const tables = runSql(
-    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
-  ).values.map((r) => r[0]);
-
   main.innerHTML = `
     <article class="lesson">
-      <h2>📋 Данные таблиц</h2>
-      <p>Все таблицы учебной базы целиком, как они есть — полезно перед тем, как писать запрос:
-      посмотреть, какие значения реально встречаются в столбцах, прежде чем гадать.</p>
-      <div class="data-tables"></div>
+      <h2>📋 Схема и данные</h2>
+      <p>Связи между таблицами и всё их содержимое. То же самое доступно с любой страницы —
+      кнопкой «Посмотреть БД» вверху.</p>
+      <section>
+        <h3>Связи между таблицами</h3>
+        ${buildErDiagram(collectSchema())}
+      </section>
+      <section>
+        <h3>Данные</h3>
+        <div class="data-grid">${buildAllTablesHtml()}</div>
+      </section>
     </article>
   `;
-
-  const container = main.querySelector('.data-tables');
-  tables.forEach((table) => {
-    const result = runSql(`SELECT * FROM ${table} LIMIT 500;`);
-    const block = document.createElement('section');
-    block.className = 'example-block';
-    block.innerHTML = `<h3>${escapeHtml(table)}</h3>`;
-    const resultDiv = document.createElement('div');
-    resultDiv.innerHTML = renderResultTable(result);
-    block.appendChild(resultDiv);
-    container.appendChild(block);
-  });
 }
 
 // ---------- Boot ----------
@@ -606,15 +902,20 @@ async function boot() {
   const statusEl = document.getElementById('boot-status');
   try {
     const initSqlJs = window.initSqlJs;
-    const SQL = await initSqlJs({ locateFile: (file) => SQLJS_CDN + file });
-    db = new SQL.Database();
+    SQLModule = await initSqlJs({ locateFile: (file) => SQLJS_CDN + file });
+    db = new SQLModule.Database();
 
     const schemaSql = await fetch('schema.sql').then((r) => r.text());
     db.run(schemaSql);
+    // Снимок чистой базы: из него создаются одноразовые копии для проверки
+    // упражнений, меняющих данные, и к нему возвращает кнопка «Сбросить базу».
+    pristineBytes = db.export();
 
     statusEl.remove();
     document.getElementById('app').classList.remove('hidden');
+    document.getElementById('db-toolbar').classList.remove('hidden');
 
+    initDbModal();
     renderSchemaReference();
     renderSidebar();
     selectLesson(LESSONS[0].id);

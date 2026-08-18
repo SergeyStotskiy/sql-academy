@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SQL — интерактивный учебник</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -15,9 +16,27 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>SQL — интерактивный учебник</h1>
-    <p class="subtitle">SQLite прямо в браузере · пишите запросы, смотрите результат, проверяйте себя</p>
+    <div>
+      <h1>SQL — интерактивный учебник</h1>
+      <p class="subtitle">SQLite прямо в браузере · пишите запросы, смотрите результат, проверяйте себя</p>
+    </div>
+    <div id="db-toolbar" class="db-toolbar hidden">
+      <button id="open-db-btn" class="btn">🗄️ Посмотреть БД</button>
+      <button id="reset-db-btn" class="btn btn-secondary" title="Вернуть базу в исходное состояние">
+        ↺ Сбросить базу
+      </button>
+    </div>
   </header>
+
+  <div id="db-modal" class="db-modal hidden">
+    <div class="db-modal-window">
+      <header class="db-modal-header">
+        <h2>🗄️ База данных</h2>
+        <button class="btn btn-secondary db-modal-close" title="Закрыть (Esc)">✕ Закрыть</button>
+      </header>
+      <div class="db-modal-body"></div>
+    </div>
+  </div>
 
   <p id="boot-status" class="boot-status">Загружаю SQLite (sql.js) и учебную базу…</p>
 

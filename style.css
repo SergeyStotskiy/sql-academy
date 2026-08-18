@@ -43,11 +43,109 @@ body {
 }
 
 .topbar {
-  padding: 1.25rem 1.5rem 0.75rem;
+  padding: 1rem 1.5rem;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
 }
 .topbar h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
-.subtitle { margin: 0 0 0.75rem; color: var(--muted); font-size: 0.9rem; }
+.subtitle { margin: 0; color: var(--muted); font-size: 0.9rem; }
+
+.db-toolbar { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.btn-secondary {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+
+/* ---- Модалка «Посмотреть БД» ---- */
+
+.db-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2vh 2vw;
+  overflow: auto;
+}
+.db-modal.hidden { display: none; }
+body.modal-open { overflow: hidden; }
+
+.db-modal-window {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(100%, 2400px);
+  max-height: 96vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+}
+.db-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  border-radius: 12px 12px 0 0;
+}
+.db-modal-header h2 { margin: 0; font-size: 1.1rem; }
+.db-modal-body { padding: 1.25rem; overflow: auto; }
+.db-modal-body h3 { margin-top: 0; }
+.db-modal-body section + section { margin-top: 1.5rem; }
+
+/* Данные таблиц: на широком экране раскладываются в несколько колонок. */
+.data-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+.data-table-block h4 { margin: 0 0 0.4rem; font-size: 0.95rem; }
+
+/* ---- ER-диаграмма ---- */
+
+.er-wrap { overflow-x: auto; padding-bottom: 0.5rem; }
+.er-svg { max-width: 100%; height: auto; }
+.er-box { fill: var(--sidebar-bg); stroke: var(--border); stroke-width: 1.5; }
+.er-box-head { fill: var(--sel-head-bg); stroke: var(--border); stroke-width: 1.5; }
+.er-title {
+  font: 600 13px "PT Sans", sans-serif;
+  fill: var(--fg);
+}
+.er-col { font: 12px "JetBrains Mono", monospace; fill: var(--fg); }
+.er-col-pk { font-weight: 500; }
+.er-col-fk { fill: var(--accent); }
+.er-type { font: 10px "JetBrains Mono", monospace; fill: var(--muted); }
+.er-edge { stroke: var(--accent); stroke-width: 1.8; fill: none; opacity: 0.75; }
+.er-arrow-head { fill: var(--accent); }
+
+.key-mark, .fk-mark { font-size: 0.72rem; white-space: nowrap; }
+.fk-mark { color: var(--accent); }
+
+/* ---- Справочные уроки (тема не выполняется в SQLite) ---- */
+
+.lesson-note {
+  background: rgba(234, 179, 8, 0.12);
+  border-left: 3px solid #eab308;
+  border-radius: 6px;
+  padding: 0.7rem 1rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.samples { margin-top: 1.5rem; }
+.sample { margin-bottom: 1.25rem; }
+.sample h4 { margin: 0 0 0.4rem; }
 
 .boot-status { padding: 2rem; color: var(--muted); }
 
@@ -74,6 +172,18 @@ body {
   font-size: 0.9rem;
   border-left: 3px solid transparent;
 }
+.nav-module {
+  padding: 0.9rem 1rem 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  margin-top: 0.4rem;
+}
+#lesson-nav .nav-module:first-child { border-top: none; margin-top: 0; }
+
 .nav-item:hover { background: rgba(37, 99, 235, 0.08); }
 .nav-item.active { border-left-color: var(--accent); font-weight: 600; }
 .nav-progress { color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
