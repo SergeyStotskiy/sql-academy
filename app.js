@@ -3,6 +3,7 @@
 
 const SQLJS_CDN = 'https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/';
 const PROGRESS_KEY = 'sql-tutorial-progress-v1';
+const TRAINER_KEY = 'sql-tutorial-trainer-v1';
 
 let db = null;
 // Модуль sql.js и снимок чистой базы: нужны, чтобы (а) проверять упражнения,
@@ -14,7 +15,24 @@ let pristineBytes = null;
 const state = {
   currentLessonId: null,
   progress: loadProgress(),
+  trainer: {
+    solved: loadTrainerProgress(),
+    filter: 'all', // all | easy | medium | hard | unsolved
+    openTaskId: null,
+  },
 };
+
+function loadTrainerProgress() {
+  try {
+    return JSON.parse(localStorage.getItem(TRAINER_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveTrainerProgress() {
+  localStorage.setItem(TRAINER_KEY, JSON.stringify(state.trainer.solved));
+}
 
 function loadProgress() {
   try {
@@ -680,6 +698,18 @@ function renderSidebar() {
     nav.appendChild(li);
   });
 
+  const trainerHead = document.createElement('li');
+  trainerHead.className = 'nav-module';
+  trainerHead.textContent = 'Практика';
+  nav.appendChild(trainerHead);
+
+  const { solved, total } = trainerStats();
+  const trainerLi = document.createElement('li');
+  trainerLi.className = 'nav-item' + (state.currentLessonId === 'trainer' ? ' active' : '');
+  trainerLi.innerHTML = `<span class="nav-title">🏋️ Тренажёр</span><span class="nav-progress">${solved}/${total}</span>`;
+  trainerLi.addEventListener('click', () => selectLesson('trainer'));
+  nav.appendChild(trainerLi);
+
   const dataLi = document.createElement('li');
   dataLi.className = 'nav-item' + (state.currentLessonId === 'data' ? ' active' : '');
   dataLi.innerHTML = '<span class="nav-title">📋 Схема и данные</span>';
@@ -700,6 +730,8 @@ function selectLesson(lessonId) {
     renderSandbox();
   } else if (lessonId === 'data') {
     renderDataBrowser();
+  } else if (lessonId === 'trainer') {
+    renderTrainer();
   } else {
     renderLesson(LESSONS.find((l) => l.id === lessonId));
   }
@@ -875,6 +907,199 @@ function renderSandbox() {
     runAndShow(textarea.value, resultEl);
   });
   attachLivePreview(textarea, main.querySelector('.live-body'));
+}
+
+// ---------- Тренажёр ----------
+
+const LEVEL_LABEL = { easy: 'Лёгкое', medium: 'Среднее', hard: 'Сложное' };
+
+function trainerStats() {
+  const byLevel = { easy: [0, 0], medium: [0, 0], hard: [0, 0] };
+  TASKS.forEach((t) => {
+    byLevel[t.level][1] += 1;
+    if (state.trainer.solved[t.id]) byLevel[t.level][0] += 1;
+  });
+  const solved = TASKS.filter((t) => state.trainer.solved[t.id]).length;
+  return { byLevel, solved, total: TASKS.length };
+}
+
+// Обновляет счётчики решённых заданий, не перерисовывая список — иначе у
+// открытого задания пропали бы набранный запрос и результат.
+function updateTrainerCounters() {
+  const { byLevel, solved, total } = trainerStats();
+
+  const progressEl = document.querySelector('.trainer-progress');
+  if (progressEl) progressEl.innerHTML = `Решено: <strong>${solved}</strong> из ${total}`;
+
+  const labels = {
+    all: `Все (${total})`,
+    easy: `Лёгкие (${byLevel.easy[0]}/${byLevel.easy[1]})`,
+    medium: `Средние (${byLevel.medium[0]}/${byLevel.medium[1]})`,
+    hard: `Сложные (${byLevel.hard[0]}/${byLevel.hard[1]})`,
+    unsolved: 'Нерешённые',
+  };
+  document.querySelectorAll('.btn-filter').forEach((btn) => {
+    const label = labels[btn.dataset.filter];
+    if (label) btn.textContent = label;
+  });
+
+  renderSidebar();
+}
+
+function visibleTasks() {
+  const f = state.trainer.filter;
+  if (f === 'all') return TASKS;
+  if (f === 'unsolved') return TASKS.filter((t) => !state.trainer.solved[t.id]);
+  return TASKS.filter((t) => t.level === f);
+}
+
+function renderTrainer() {
+  const main = document.getElementById('main-content');
+  const { byLevel, solved, total } = trainerStats();
+
+  const filters = [
+    ['all', `Все (${total})`],
+    ['easy', `Лёгкие (${byLevel.easy[0]}/${byLevel.easy[1]})`],
+    ['medium', `Средние (${byLevel.medium[0]}/${byLevel.medium[1]})`],
+    ['hard', `Сложные (${byLevel.hard[0]}/${byLevel.hard[1]})`],
+    ['unsolved', 'Нерешённые'],
+  ];
+
+  main.innerHTML = `
+    <article class="lesson">
+      <h2>🏋️ Тренажёр</h2>
+      <p>Задания на той же учебной базе — от простых выборок до сверки данных между таблицами.
+      К каждому есть подсказки (открываются по клику, если застряли) и разбор решения.
+      Схема и содержимое таблиц всегда под рукой — кнопка «Посмотреть БД» вверху.</p>
+
+      <p class="trainer-progress">Решено: <strong>${solved}</strong> из ${total}</p>
+
+      <div class="trainer-filters">
+        ${filters
+          .map(
+            ([key, label]) =>
+              `<button class="btn btn-filter${state.trainer.filter === key ? ' active' : ''}" data-filter="${key}">${escapeHtml(
+                label
+              )}</button>`
+          )
+          .join('')}
+      </div>
+
+      <div class="task-list"></div>
+    </article>
+  `;
+
+  main.querySelectorAll('.btn-filter').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.trainer.filter = btn.dataset.filter;
+      renderTrainer();
+    });
+  });
+
+  const list = main.querySelector('.task-list');
+  const tasks = visibleTasks();
+  if (!tasks.length) {
+    list.innerHTML = '<p class="muted">Нет заданий под этот фильтр — все решены 🎉</p>';
+    return;
+  }
+  tasks.forEach((task, idx) => renderTask(task, idx, list));
+}
+
+function renderTask(task, idx, container) {
+  const done = !!state.trainer.solved[task.id];
+  const open = state.trainer.openTaskId === task.id;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'task' + (done ? ' task-done' : '');
+  wrap.innerHTML = `
+    <div class="task-head">
+      <span class="task-mark">${done ? '✅' : '▫️'}</span>
+      <span class="task-title">${escapeHtml(task.title)}</span>
+      <span class="task-level task-level-${task.level}">${LEVEL_LABEL[task.level]}</span>
+    </div>
+    <div class="task-body${open ? '' : ' hidden'}">
+      <p class="task-prompt">${task.prompt}</p>
+      <p class="muted">Ожидаемый результат: ${escapeHtml(task.columns)}</p>
+
+      <details class="hint"><summary>💡 Подсказка 1 — с чего начать</summary><p>${escapeHtml(
+        task.hints[0]
+      )}</p></details>
+      ${
+        task.hints[1]
+          ? `<details class="hint"><summary>💡 Подсказка 2 — конкретная конструкция</summary><p>${escapeHtml(
+              task.hints[1]
+            )}</p></details>`
+          : ''
+      }
+
+      <textarea class="sql-input" rows="5" spellcheck="false" placeholder="-- напишите запрос здесь"></textarea>
+      <div class="exercise-actions">
+        <button class="btn run-btn">Выполнить</button>
+        <button class="btn check-btn">Проверить</button>
+        <details class="solution">
+          <summary>Показать разбор и ответ</summary>
+          <div class="task-explanation">${task.explanation}</div>
+          <pre class="sql-code"></pre>
+        </details>
+      </div>
+      <section class="live-preview">
+        <h5>Что выбирается прямо сейчас</h5>
+        <div class="live-body"></div>
+      </section>
+      <div class="result task-result"></div>
+      <div class="check-feedback"></div>
+    </div>
+  `;
+
+  // Клик по заголовку сворачивает/разворачивает задание.
+  wrap.querySelector('.task-head').addEventListener('click', () => {
+    state.trainer.openTaskId = open ? null : task.id;
+    renderTrainer();
+  });
+
+  if (open) {
+    const textarea = wrap.querySelector('.sql-input');
+    const resultEl = wrap.querySelector('.task-result');
+    const feedbackEl = wrap.querySelector('.check-feedback');
+    wrap.querySelector('.solution pre').textContent = task.solutionQuery;
+
+    wrap.querySelector('.run-btn').addEventListener('click', () => {
+      feedbackEl.innerHTML = '';
+      runAndShow(textarea.value, resultEl);
+    });
+
+    wrap.querySelector('.check-btn').addEventListener('click', () => {
+      let userResult;
+      try {
+        userResult = runSql(textarea.value);
+        resultEl.innerHTML = renderResultTable(userResult);
+      } catch (err) {
+        resultEl.innerHTML = renderError(err);
+        feedbackEl.innerHTML = '<p class="feedback fail">❌ Запрос не выполнился.</p>';
+        return;
+      }
+      // Эталон считаем на чистой копии базы: если пользователь успел что-то
+      // изменить в песочнице, задание всё равно проверится корректно.
+      const expected = withTempDb((tdb) => execIn(tdb, task.solutionQuery));
+      const verdict = compareResults(userResult, expected, !!task.orderMatters);
+      if (verdict.ok) {
+        feedbackEl.innerHTML = '<p class="feedback ok">✅ Верно!</p>';
+        if (!state.trainer.solved[task.id]) {
+          state.trainer.solved[task.id] = true;
+          saveTrainerProgress();
+          wrap.classList.add('task-done');
+          wrap.querySelector('.task-mark').textContent = '✅';
+          updateTrainerCounters();
+        }
+      } else {
+        feedbackEl.innerHTML = `<p class="feedback fail">❌ Пока не то. ${escapeHtml(verdict.reason)}</p>`;
+      }
+    });
+
+    attachLivePreview(textarea, wrap.querySelector('.live-body'));
+  }
+
+  container.appendChild(wrap);
 }
 
 function renderDataBrowser() {

@@ -30,6 +30,8 @@ async function main() {
 
   const LESSONS = require(path.join(ROOT, 'lessons.js'));
 
+  const LEVELS = ['easy', 'medium', 'hard'];
+
   let failures = 0;
   let warnings = 0;
   let checked = 0;
@@ -93,6 +95,51 @@ async function main() {
       }
     }
   }
+
+  // ---- Задания тренажёра ----
+  const TASKS = require(path.join(ROOT, 'tasks.js'));
+  const seenIds = new Set();
+  const counts = { easy: 0, medium: 0, hard: 0 };
+
+  console.log('\n🏋️ Тренажёр');
+  for (const task of TASKS) {
+    if (seenIds.has(task.id)) {
+      failures++;
+      console.error(`  ❌ дублирующийся id задания: ${task.id}`);
+    }
+    seenIds.add(task.id);
+
+    if (!LEVELS.includes(task.level)) {
+      failures++;
+      console.error(`  ❌ ${task.id}: неизвестный уровень «${task.level}»`);
+    } else {
+      counts[task.level]++;
+    }
+
+    if (!task.hints || !task.hints.length) {
+      failures++;
+      console.error(`  ❌ ${task.id}: нет подсказок`);
+    }
+    if (!task.explanation) {
+      failures++;
+      console.error(`  ❌ ${task.id}: нет разбора решения`);
+    }
+
+    // Задание, у которого ответ — пустая таблица, невозможно отличить от
+    // «ученик ничего не написал», поэтому пустой результат здесь считается ошибкой.
+    const res = runIsolated([task.solutionQuery]);
+    checked++;
+    if (!res.ok) {
+      failures++;
+      console.error(`  ❌ ${task.id} (${task.title}): ${res.error.message}`);
+    } else if (res.last.values.length === 0) {
+      failures++;
+      console.error(`  ❌ ${task.id} (${task.title}): решение возвращает 0 строк`);
+    }
+  }
+  console.log(
+    `  заданий: ${TASKS.length} (лёгких ${counts.easy}, средних ${counts.medium}, сложных ${counts.hard})`
+  );
 
   console.log(`\nПроверено запросов: ${checked}. Ошибок: ${failures}. Предупреждений: ${warnings}.`);
   if (failures > 0) {

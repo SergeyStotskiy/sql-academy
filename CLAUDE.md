@@ -62,14 +62,34 @@ Three lesson/exercise kinds exist, and they change how rendering and grading wor
   not "fix" them by inventing SQLite equivalents that behave differently — verify against SQLite
   first (a quick throwaway script using the Node `sql.js` in `node_modules` is the fastest way).
 
+**`tasks.js`** holds the standalone trainer: 45 original tasks (15 easy / 20 medium / 10 hard) with
+`{ id, level, title, prompt, columns, hints[], explanation, solutionQuery, orderMatters? }`. They are
+*not* ported from any other site — several deliberately exercise the tester-flavoured consistency
+checks the seed data was built for. Graded like read-only exercises, but always against a
+`withTempDb()` copy so sandbox edits can't break them; progress lives under its own localStorage key
+(`TRAINER_KEY`). `npm test` enforces the invariants that matter here: unique ids, a known level, at
+least one hint, an explanation, and — importantly — a solution that returns **at least one row**
+(a task whose correct answer is an empty table is indistinguishable from "learner typed nothing").
+
 **`schema.sql`** defines and seeds the one shared learning database (a small e-commerce schema:
-`customers`, `categories`, `products`, `orders`, `order_items`). It is loaded by both `app.js`
+`customers`, `categories`, `products`, `orders`, `order_items`, plus `payments`, `shipments`,
+`product_reviews`). The three extra tables exist to give the trainer realistic cross-table
+verification work, and their data carries **deliberate anomalies** — a payment that does not match
+its order total (order 3), a shipment dispatched before its payment cleared (order 17), a shipment
+against a cancelled order (13), and a review from a customer who never bought that product
+(review 12). Do not "clean them up": tasks h7–h9 exist to find exactly those rows, and `npm test`
+fails a task whose solution returns nothing. It is loaded by both `app.js`
 (via `fetch` in the browser) and `test/validate.js` (via `fs.readFileSync` in Node) against their
 own sql.js instances — same schema, same seed data, two runtimes. When adding an exercise that
 needs specific data shapes (e.g. an unpurchased product, a customer with no orders, a NULL
 column), add the row to `schema.sql` rather than special-casing the query — see e.g. product id
 25 ("Yoga Block"), which exists solely so the "products never purchased" exercise in module 7 has
 a non-empty answer.
+
+One caveat when editing seed data: a few lesson texts quote concrete numbers from it (module 7's
+example note says `COUNT(*)` is 12 and `COUNT(city)` is 10; module 17 says two orders are
+cancelled). Adding *tables* is safe, but changing rows in `customers`/`orders`/`products` means
+re-reading those notes — `npm test` validates SQL, not prose.
 
 **`app.js`** boots sql.js from a CDN (`SQLJS_CDN` constant), loads `schema.sql` into an in-memory DB
 and keeps `pristineBytes = db.export()` as the snapshot behind both `withTempDb()` grading and the
