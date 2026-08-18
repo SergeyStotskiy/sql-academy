@@ -63,6 +63,67 @@ body {
   border: 1px solid var(--border);
 }
 
+/* ---- Прогресс: панель переноса и общий индикатор ---- */
+
+.progress-panel {
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar-bg);
+  padding: 0.9rem 1.5rem;
+}
+.progress-panel.hidden { display: none; }
+.progress-panel p { margin: 0 0 0.6rem; font-size: 0.85rem; }
+.progress-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.progress-status {
+  margin: 0.6rem 0 0 !important;
+  font-size: 0.85rem;
+  min-height: 1.2em;
+}
+.progress-status.ok { color: var(--ok); }
+.progress-status.error { color: var(--fail); }
+
+.storage-warning {
+  margin: 0;
+  padding: 0.6rem 1.5rem;
+  background: rgba(234, 179, 8, 0.15);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.storage-warning.hidden { display: none; }
+
+.overall-progress {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+.op-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.op-head span { color: var(--muted); }
+.op-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.op-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+.op-split {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
 /* ---- Модалка «Посмотреть БД» ---- */
 
 .db-modal {

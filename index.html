@@ -25,8 +25,30 @@
       <button id="reset-db-btn" class="btn btn-secondary" title="Вернуть базу в исходное состояние">
         ↺ Сбросить базу
       </button>
+      <button id="progress-btn" class="btn btn-secondary" title="Перенести или сбросить прогресс">
+        📈 Прогресс
+      </button>
     </div>
   </header>
+
+  <div id="progress-panel" class="progress-panel hidden">
+    <p class="muted">
+      Прогресс хранится в этом браузере (localStorage). Чтобы продолжить на другом компьютере,
+      выгрузите его в файл и загрузите там.
+    </p>
+    <div class="progress-actions">
+      <button id="progress-export" class="btn btn-secondary">⬇ Скачать файл</button>
+      <button id="progress-import" class="btn btn-secondary">⬆ Загрузить файл</button>
+      <button id="progress-reset" class="btn btn-secondary">🗑 Сбросить прогресс</button>
+      <input type="file" id="progress-file" accept="application/json,.json" hidden />
+    </div>
+    <p id="progress-status" class="progress-status"></p>
+  </div>
+
+  <p id="storage-warning" class="storage-warning hidden">
+    ⚠️ Браузер не даёт сохранять данные (возможно, включён приватный режим) — прогресс
+    не сохранится после закрытия вкладки.
+  </p>
 
   <div id="db-modal" class="db-modal hidden">
     <div class="db-modal-window">
@@ -42,6 +64,7 @@
 
   <div id="app" class="app hidden">
     <nav class="sidebar">
+      <div id="overall-progress" class="overall-progress"></div>
       <ul id="lesson-nav"></ul>
     </nav>
 

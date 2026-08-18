@@ -123,6 +123,18 @@ semantics. Two invariants to preserve when touching this code:
 `ORDER BY`/`LIMIT` are folded into the rowid query (so highlighting matches a top-N result exactly)
 but skipped when `GROUP BY` is present, where they apply to groups rather than source rows.
 
+**Progress** lives in `localStorage` under three keys — `PROGRESS_KEY` (lesson exercises, keyed
+lessonId → exerciseId), `TRAINER_KEY` (trainer tasks by id) and `LAST_VIEW_KEY` (the section to
+restore on load). Cookies were deliberately not used: they ride along on every request, cap at ~4 KB,
+and nothing here needs server access. Every read and write goes through `storageGet`/`storageSet`,
+which swallow exceptions and flip a one-time banner — Safari's private mode throws on `setItem`, and
+an unguarded throw used to abort the grading handler halfway, leaving the sidebar counter stale.
+Cross-device transfer is a JSON file (`exportProgress` / `parseProgressFile` / `importProgress`)
+rather than a backend; `parseProgressFile` validates the file and drops entries whose lesson,
+exercise or task id no longer exists, and import *merges* rather than replaces, so loading an old
+file cannot wipe newer progress. If you rename a lesson or exercise id, previously saved progress for
+it is silently dropped — that is intentional, but it means ids are part of the persisted contract.
+
 **Table rendering** is centralised in `renderResultTable(result, opts)`, which every surface shares —
 lesson exercises, sandbox, trainer, and the data cards — so changes there are global. It marks a
 column numeric only when every non-null value in it is a JS number (right-aligned, tabular figures),

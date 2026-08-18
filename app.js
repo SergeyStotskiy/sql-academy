@@ -4,6 +4,7 @@
 const SQLJS_CDN = 'https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/';
 const PROGRESS_KEY = 'sql-tutorial-progress-v1';
 const TRAINER_KEY = 'sql-tutorial-trainer-v1';
+const LAST_VIEW_KEY = 'sql-tutorial-last-view-v1';
 
 let db = null;
 // Модуль sql.js и снимок чистой базы: нужны, чтобы (а) проверять упражнения,
@@ -22,28 +23,67 @@ const state = {
   },
 };
 
-function loadTrainerProgress() {
+// ---------- Хранилище прогресса ----------
+//
+// Прогресс держим в localStorage, а не в куках: куки уходили бы на сервер при каждом
+// запросе, ограничены ~4 КБ и живут до срока годности. Здесь данные нужны только браузеру.
+//
+// Любое обращение к хранилищу обёрнуто в try/catch: в приватном режиме Safari и при
+// заблокированном хранилище setItem бросает исключение, и без обработки оно обрывало бы
+// проверку упражнения на середине (отметка «решено» не доезжала до меню).
+let storageBroken = false;
+
+function storageGet(key, fallback) {
   try {
-    return JSON.parse(localStorage.getItem(TRAINER_KEY)) || {};
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : JSON.parse(raw);
   } catch {
-    return {};
+    return fallback;
   }
+}
+
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    reportStorageBroken();
+    return false;
+  }
+}
+
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* нечего чистить — хранилище и так недоступно */
+  }
+}
+
+// Предупреждаем один раз, а не на каждое решённое упражнение.
+function reportStorageBroken() {
+  if (storageBroken) return;
+  storageBroken = true;
+  const banner = document.getElementById('storage-warning');
+  if (banner) banner.classList.remove('hidden');
+}
+
+function loadTrainerProgress() {
+  const v = storageGet(TRAINER_KEY, {});
+  return v && typeof v === 'object' ? v : {};
 }
 
 function saveTrainerProgress() {
-  localStorage.setItem(TRAINER_KEY, JSON.stringify(state.trainer.solved));
+  storageSet(TRAINER_KEY, state.trainer.solved);
 }
 
 function loadProgress() {
-  try {
-    return JSON.parse(localStorage.getItem(PROGRESS_KEY)) || {};
-  } catch {
-    return {};
-  }
+  const v = storageGet(PROGRESS_KEY, {});
+  return v && typeof v === 'object' ? v : {};
 }
 
 function saveProgress() {
-  localStorage.setItem(PROGRESS_KEY, JSON.stringify(state.progress));
+  storageSet(PROGRESS_KEY, state.progress);
 }
 
 function markExerciseDone(lessonId, exerciseId) {
@@ -59,6 +99,44 @@ function isExerciseDone(lessonId, exerciseId) {
 function lessonProgress(lesson) {
   const done = lesson.exercises.filter((ex) => isExerciseDone(lesson.id, ex.id)).length;
   return { done, total: lesson.exercises.length };
+}
+
+// Суммарный прогресс: упражнения всех уроков + задания тренажёра.
+function overallProgress() {
+  let lessonsDone = 0;
+  let lessonsTotal = 0;
+  LESSONS.forEach((lesson) => {
+    const { done, total } = lessonProgress(lesson);
+    lessonsDone += done;
+    lessonsTotal += total;
+  });
+  const tasksDone = TASKS.filter((t) => state.trainer.solved[t.id]).length;
+  return {
+    lessonsDone,
+    lessonsTotal,
+    tasksDone,
+    tasksTotal: TASKS.length,
+    done: lessonsDone + tasksDone,
+    total: lessonsTotal + TASKS.length,
+  };
+}
+
+function renderOverallProgress() {
+  const el = document.getElementById('overall-progress');
+  if (!el) return;
+  const p = overallProgress();
+  const percent = p.total ? Math.round((p.done / p.total) * 100) : 0;
+  el.innerHTML = `
+    <div class="op-head">
+      <span>Пройдено</span>
+      <strong>${p.done} из ${p.total}</strong>
+    </div>
+    <div class="op-bar"><div class="op-fill" style="width:${percent}%"></div></div>
+    <div class="op-split">
+      <span>Уроки ${p.lessonsDone}/${p.lessonsTotal}</span>
+      <span>Тренажёр ${p.tasksDone}/${p.tasksTotal}</span>
+    </div>
+  `;
 }
 
 // ---------- SQL execution helpers ----------
@@ -724,6 +802,141 @@ function wireTableNav(root) {
   });
 }
 
+// ---------- Перенос и сброс прогресса ----------
+//
+// Синхронизация между устройствами потребовала бы бэкенда и аккаунтов. Для статического
+// сайта достаточно файла: выгрузил на одном компьютере — загрузил на другом.
+
+const PROGRESS_FILE_VERSION = 1;
+
+function exportProgress() {
+  const payload = {
+    kind: 'sql-tutorial-progress',
+    version: PROGRESS_FILE_VERSION,
+    savedAt: new Date().toISOString(),
+    lessons: state.progress,
+    trainer: state.trainer.solved,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `sql-progress-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// Возвращает { ok, lessons, trainer } либо { ok: false, error }.
+// Файл пришёл извне, поэтому проверяем структуру: подсовывать в прогресс что попало нельзя.
+function parseProgressFile(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { ok: false, error: 'Это не JSON-файл.' };
+  }
+  if (!data || typeof data !== 'object' || data.kind !== 'sql-tutorial-progress') {
+    return { ok: false, error: 'Файл не похож на выгрузку прогресса этого учебника.' };
+  }
+
+  const lessons = {};
+  if (data.lessons && typeof data.lessons === 'object') {
+    for (const [lessonId, exercises] of Object.entries(data.lessons)) {
+      if (!exercises || typeof exercises !== 'object') continue;
+      const lesson = LESSONS.find((l) => l.id === lessonId);
+      if (!lesson) continue; // урока с таким id больше нет — пропускаем молча
+      for (const [exId, value] of Object.entries(exercises)) {
+        if (value !== true) continue;
+        if (!lesson.exercises.some((ex) => ex.id === exId)) continue;
+        lessons[lessonId] = lessons[lessonId] || {};
+        lessons[lessonId][exId] = true;
+      }
+    }
+  }
+
+  const trainer = {};
+  if (data.trainer && typeof data.trainer === 'object') {
+    for (const [taskId, value] of Object.entries(data.trainer)) {
+      if (value === true && TASKS.some((t) => t.id === taskId)) trainer[taskId] = true;
+    }
+  }
+
+  return { ok: true, lessons, trainer };
+}
+
+// Импорт добавляет решённое, а не затирает: если на этом устройстве уже что-то пройдено,
+// потерять это при загрузке старого файла было бы неприятным сюрпризом.
+function importProgress(parsed) {
+  const before = overallProgress().done;
+  for (const [lessonId, exercises] of Object.entries(parsed.lessons)) {
+    state.progress[lessonId] = { ...(state.progress[lessonId] || {}), ...exercises };
+  }
+  Object.assign(state.trainer.solved, parsed.trainer);
+  saveProgress();
+  saveTrainerProgress();
+  renderSidebar();
+  selectLesson(state.currentLessonId);
+  return { added: overallProgress().done - before };
+}
+
+function resetProgress() {
+  state.progress = {};
+  state.trainer.solved = {};
+  storageRemove(PROGRESS_KEY);
+  storageRemove(TRAINER_KEY);
+  renderSidebar();
+  selectLesson(state.currentLessonId);
+}
+
+function initProgressControls() {
+  const dialog = document.getElementById('progress-panel');
+  const status = document.getElementById('progress-status');
+
+  const setStatus = (msg, isError) => {
+    status.textContent = msg;
+    status.className = 'progress-status' + (isError ? ' error' : ' ok');
+  };
+
+  document.getElementById('progress-btn').addEventListener('click', () => {
+    dialog.classList.toggle('hidden');
+    if (!dialog.classList.contains('hidden')) setStatus('', false);
+  });
+
+  document.getElementById('progress-export').addEventListener('click', () => {
+    exportProgress();
+    setStatus('Файл сохранён. Перенесите его на другое устройство и загрузите там.', false);
+  });
+
+  const fileInput = document.getElementById('progress-file');
+  document.getElementById('progress-import').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    const parsed = parseProgressFile(await file.text());
+    fileInput.value = ''; // иначе повторный выбор того же файла не вызовет change
+    if (!parsed.ok) {
+      setStatus(parsed.error + ' Текущий прогресс не изменён.', true);
+      return;
+    }
+    const { added } = importProgress(parsed);
+    const p = overallProgress();
+    setStatus(
+      added > 0
+        ? `Добавлено отметок: ${added}. Теперь пройдено ${p.done} из ${p.total}.`
+        : 'Файл прочитан, но нового в нём не оказалось — всё это уже засчитано.',
+      false
+    );
+  });
+
+  document.getElementById('progress-reset').addEventListener('click', () => {
+    if (!confirm('Сбросить весь прогресс — и уроки, и тренажёр? Отменить это будет нельзя.')) return;
+    resetProgress();
+    setStatus('Прогресс сброшен.', false);
+  });
+}
+
 // ---------- "Посмотреть БД" modal ----------
 
 function openDbModal() {
@@ -771,6 +984,10 @@ function initDbModal() {
 // ---------- Lesson rendering ----------
 
 function renderSidebar() {
+  // Общий прогресс живёт рядом с меню и обновляется вместе с ним — так он всегда
+  // актуален, откуда бы ни пришло изменение (урок, тренажёр, импорт, сброс).
+  renderOverallProgress();
+
   const nav = document.getElementById('lesson-nav');
   nav.innerHTML = '';
   let currentModule = null;
@@ -825,6 +1042,7 @@ function renderSidebar() {
 
 function selectLesson(lessonId) {
   state.currentLessonId = lessonId;
+  storageSet(LAST_VIEW_KEY, lessonId);
   renderSidebar();
   if (lessonId === 'sandbox') {
     renderSandbox();
@@ -1244,9 +1462,17 @@ async function boot() {
     document.getElementById('db-toolbar').classList.remove('hidden');
 
     initDbModal();
+    initProgressControls();
     renderSchemaReference();
     renderSidebar();
-    selectLesson(LESSONS[0].id);
+
+    // Возвращаемся туда, где человек закончил в прошлый раз. Раздел мог исчезнуть
+    // (например, после переименования урока), поэтому проверяем, что он ещё существует.
+    const lastView = storageGet(LAST_VIEW_KEY, null);
+    const known =
+      typeof lastView === 'string' &&
+      (['sandbox', 'data', 'trainer'].includes(lastView) || LESSONS.some((l) => l.id === lastView));
+    selectLesson(known ? lastView : LESSONS[0].id);
   } catch (err) {
     statusEl.innerHTML = `<p class="error">Не удалось загрузить SQLite (sql.js): ${escapeHtml(
       err.message || String(err)
