@@ -14,6 +14,30 @@
   --sel-bg: #dbeafe;
   --sel-head-bg: #bfdbfe;
   --row-hover: #eef2ff;
+
+  /* Фон страницы и «лист» с контентом: колонка текста должна читаться как лист бумаги. */
+  --page-bg: #f4f5f7;
+  --card-bg: #ffffff;
+
+  /* Шкала кеглей. Основной текст 17px при длине строки ~66 знаков — это то,
+     что делает чтение комфортным (замер референса: 18px при 66 знаках). */
+  --step-0: 0.875rem;  /* подписи, мелочь */
+  --step-1: 1.0625rem; /* основной текст, 17px */
+  --step-2: 1.2rem;    /* лид-абзац */
+  --step-3: 1.35rem;   /* заголовок раздела (h3) */
+  --step-4: 1.8rem;    /* заголовок урока (h2) */
+
+  /* Шкала отступов — чтобы ритм страницы задавался набором значений, а не наугад. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2.5rem;
+
+  --radius: 10px;
+  /* Ширина колонки текста: ~66 знаков при 17px. Главный параметр читаемости. */
+  --measure: 42rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,6 +56,8 @@
     --sel-bg: #1b2f4d;
     --sel-head-bg: #234069;
     --row-hover: #232a38;
+    --page-bg: #101216;
+    --card-bg: #16181d;
   }
 }
 
@@ -325,46 +351,115 @@ body.modal-open { overflow: hidden; }
 .nav-progress { color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
 
 .main {
-  padding: 1.5rem 2rem;
+  padding: var(--space-6) var(--space-5);
   overflow-y: auto;
+  background: var(--page-bg);
 }
 
-.lesson h2 { margin-top: 0; }
-.lesson-intro { line-height: 1.65; max-width: 62rem; }
-.lesson-intro code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
-.lesson-intro ul { padding-left: 1.3rem; }
-.lesson-intro li { margin-bottom: 0.4rem; }
-.lesson-intro .sql-code { margin: 0.75rem 0; }
+/* Карточка контента шире колонки текста: тексту нужна узкая колонка, а таблицам,
+   упражнениям и предпросмотру — место. Поэтому ширину ограничиваем в двух местах. */
+.main > .lesson {
+  max-width: 52rem;
+  margin: 0 auto;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-6) var(--space-5);
+}
+/* Экраны, которым узкая карточка мешает: данные, тренажёр, песочница. */
+.main > .lesson-wide { max-width: 100%; }
+.main > .lesson-medium { max-width: 72rem; }
 
+.lesson h2 {
+  margin: 0 0 var(--space-5);
+  font-size: var(--step-4);
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+.lesson h3 {
+  font-size: var(--step-3);
+  line-height: 1.25;
+  margin: 0 0 var(--space-3);
+}
+.lesson h4 { font-size: 1.05rem; margin: 0 0 var(--space-2); }
+
+/* Колонка чтения. Ограничение ширины — главное лекарство от «текст сливается»:
+   при 60–75 знаках в строке глаз безошибочно находит начало следующей строки. */
+.lesson-intro {
+  font-size: var(--step-1);
+  line-height: 1.65;
+  max-width: var(--measure);
+}
+.lesson-intro > .sql-code { max-width: none; }
+.lesson-intro > p { margin: 0 0 1.1em; }
+/* Лид-абзац крупнее: даёт глазу точку входа в урок. */
+.lesson-intro > p:first-child { font-size: var(--step-2); line-height: 1.55; }
+.lesson-intro strong { font-weight: 700; }
+
+.lesson-intro ul, .lesson-intro ol {
+  padding-left: 1.35rem;
+  margin: 0 0 1.1em;
+}
+.lesson-intro li { margin-bottom: 0.55em; }
+.lesson-intro li::marker { color: var(--accent); }
+.lesson-intro .sql-code { margin: var(--space-4) 0; }
+
+/* Инлайн-код чуть мельче текста: моноширинный шрифт в одном кегле с основным
+   выглядит крупнее и рябит в плотном абзаце. */
+code {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+.lesson-intro code,
+.task-prompt code,
+.task-explanation code {
+  background: var(--code-bg);
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+}
+
+/* Врезки: полноценные блоки с воздухом, а не сноски мелким шрифтом. */
+.qa-note, .lesson-note {
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-4) var(--space-4) var(--space-5);
+  font-size: 0.97em;
+  line-height: 1.6;
+  margin: var(--space-5) 0;
+}
 .qa-note {
-  background: rgba(37, 99, 235, 0.08);
-  border-left: 3px solid var(--accent);
-  border-radius: 6px;
-  padding: 0.7rem 1rem;
-  font-size: 0.9rem;
-  line-height: 1.5;
+  background: rgba(37, 99, 235, 0.07);
+  border-left: 4px solid var(--accent);
 }
 
-.example-block, .exercises { margin-top: 1.5rem; }
+/* Разделы урока отделены линией — иначе «Пример» и «Упражнения» сливаются с текстом. */
+.example-block, .exercises, .samples {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
 
 .sql-code {
   background: var(--code-bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-4);
   overflow-x: auto;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
+  font-size: 0.86rem;
+  line-height: 1.6;
   white-space: pre-wrap;
 }
 
+/* Упражнения слегка утоплены относительно листа — так блоки не сливаются с текстом. */
 .exercise {
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem;
-  margin-bottom: 1.25rem;
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+  background: var(--page-bg);
 }
-.exercise h4 { margin: 0 0 0.5rem; }
+.exercise h4 { margin: 0 0 var(--space-2); }
+.exercise > p { line-height: 1.6; }
 
 .sql-input {
   width: 100%;

@@ -1205,7 +1205,7 @@ function renderExercise(lesson, ex, idx, container) {
 function renderSandbox() {
   const main = document.getElementById('main-content');
   main.innerHTML = `
-    <article class="lesson">
+    <article class="lesson lesson-medium">
       <h2>🧪 Песочница</h2>
       <p>Пишите любые SQL-запросы к учебной базе и сразу смотрите результат. Список таблиц и столбцов — в боковой панели справа.</p>
       <textarea class="sql-input" rows="8" spellcheck="false" placeholder="SELECT * FROM customers;"></textarea>
@@ -1284,7 +1284,7 @@ function renderTrainer() {
   ];
 
   main.innerHTML = `
-    <article class="lesson">
+    <article class="lesson lesson-medium">
       <h2>🏋️ Тренажёр</h2>
       <p>Задания на той же учебной базе — от простых выборок до сверки данных между таблицами.
       К каждому есть подсказки (открываются по клику, если застряли) и разбор решения.
@@ -1424,7 +1424,7 @@ function renderDataBrowser() {
   const main = document.getElementById('main-content');
   const schema = collectSchema();
   main.innerHTML = `
-    <article class="lesson">
+    <article class="lesson lesson-wide">
       <h2>📋 Схема и данные</h2>
       <p>Связи между таблицами и всё их содержимое. То же самое доступно с любой страницы —
       кнопкой «Посмотреть БД» вверху.</p>

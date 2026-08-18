@@ -123,6 +123,17 @@ semantics. Two invariants to preserve when touching this code:
 `ORDER BY`/`LIMIT` are folded into the rowid query (so highlighting matches a top-N result exactly)
 but skipped when `GROUP BY` is present, where they apply to groups rather than source rows.
 
+**Typography is a system, not per-block values.** `style.css` opens with tokens — `--step-0..4`
+(type scale), `--space-1..6`, `--radius`, and `--measure` — and everything else is expressed through
+them; add new sizes there rather than hardcoding. The one that matters most is `--measure` (42rem):
+prose was previously running ~115–127 characters per line against the 60–75 that reads comfortably,
+which is what made lessons feel like an undifferentiated wall of text. Note the deliberate split —
+`.main > .lesson` caps the *card* at 52rem so tables, exercises and the live preview have room, while
+`.lesson-intro` caps the *text* at `--measure`. Screens that need more width opt out with
+`lesson-medium` (trainer, sandbox) or `lesson-wide` (schema and data); if you add a screen, pick one
+of those classes deliberately. Content sits on a `--card-bg` sheet over a `--page-bg` backdrop, so
+both tokens need a value in each theme.
+
 **Progress** lives in `localStorage` under three keys — `PROGRESS_KEY` (lesson exercises, keyed
 lessonId → exerciseId), `TRAINER_KEY` (trainer tasks by id) and `LAST_VIEW_KEY` (the section to
 restore on load). Cookies were deliberately not used: they ride along on every request, cap at ~4 KB,
